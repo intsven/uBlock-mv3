@@ -92,6 +92,11 @@ vAPI.Tabs = class extends vAPI.Tabs {
     // Extend base class to normalize as per platform
 
     vAPI.Net = class extends vAPI.Net {
+		constructor() {
+			super();
+			this.pendingRequests = [];
+		}
+
         normalizeDetails(details) {
             // Chromium 63+ supports the `initiator` property, which contains
             // the URL of the origin from which the network request was made
@@ -149,25 +154,52 @@ vAPI.Tabs = class extends vAPI.Tabs {
             return Array.from(out);
         }
 
-        // https://github.com/uBlockOrigin/uBlock-issues/issues/2063
-        //   Do not interfere with root document
-        suspendOneRequest(details) {
-            this.onBeforeSuspendableRequest(details);
-            if ( details.type === 'main_frame' ) { return; }
-            return { cancel: true };
-        }
+		suspendOneRequest(details) {
+			if ( globalThis.__ubo_canAsyncBlock === true ) {
+				const pending = {
+					details: Object.assign({}, details),
+					resolve: undefined,
+					promise: undefined
+				};
+				pending.promise = new Promise(resolve => {
+					pending.resolve = resolve;
+				});
+				this.pendingRequests.push(pending);
+				return pending.promise;
+			}
+			// https://github.com/uBlockOrigin/uBlock-issues/issues/2063
+			//   Do not interfere with root document
+			this.onBeforeSuspendableRequest(details);
+			if ( details.type === 'main_frame' ) { return; }
+			return { cancel: true };
+		}
 
-        unsuspendAllRequests(discard = false) {
-            if ( discard === true ) { return; }
-            const toReload = [];
-            for ( const tabId of this.unprocessedTabs.keys() ) {
-                toReload.push(tabId);
-            }
-            this.removeUnprocessedRequest();
-            for ( const tabId of toReload ) {
-                vAPI.tabs.reload(tabId);
-            }
-        }
+		unsuspendAllRequests(discard = false) {
+			const pendingRequests = this.pendingRequests;
+			this.pendingRequests = [];
+			for ( const entry of pendingRequests ) {
+				entry.resolve(
+					discard !== true
+						? this.onBeforeSuspendableRequest(entry.details)
+						: undefined
+				);
+			}
+			if ( discard === true ) { return; }
+			if ( this.unprocessedTabs.size === 0 ) { return; }
+			const toReload = [];
+			for ( const tabId of this.unprocessedTabs.keys() ) {
+				toReload.push(tabId);
+			}
+			this.removeUnprocessedRequest();
+			for ( const tabId of toReload ) {
+				vAPI.tabs.reload(tabId);
+			}
+		}
+
+		// optimistically say we support suspending since we can't tell syncly
+		static canSuspend() {
+			return true;
+		}
     };
 }
 
@@ -213,18 +245,25 @@ vAPI.scriptletsInjector = (( ) => {
     const parts = [
         '(',
         function(details) {
-            if ( self[Symbol.for("uBO_scriptletsInjected")] !== undefined ) { return; }
+            if ( self.uBO_scriptletsInjected !== undefined ) { return self.uBO_scriptletsInjected; }
             const doc = document;
             const { location } = doc;
             if ( location === null ) { return; }
             const { hostname } = location;
             if ( hostname !== '' && details.hostname !== hostname ) { return; }
+            let script;
             try {
-				const scriptlets = function(){};
-                self[Symbol.for("uBO_scriptletsInjected")] = details.filters;
+                script = doc.createElement('script');
+                script.appendChild(doc.createTextNode(details.scriptlets));
+                (doc.head || doc.documentElement).appendChild(script);
+                self.uBO_scriptletsInjected = details.filters;
             } catch {
             }
-            return 0;
+            if ( script ) {
+                script.remove();
+                script.textContent = '';
+            }
+            return self.uBO_scriptletsInjected;
         }.toString(),
         ')(',
             'json-slot',
@@ -234,19 +273,18 @@ vAPI.scriptletsInjector = (( ) => {
     return (hostname, details) => {
         parts[jsonSlot] = JSON.stringify({
             hostname,
+            scriptlets: details.mainWorld,
             filters: details.filters,
         });
-        const code = parts.join('');
-        // Manually substitute noop function with scriptlet wrapper
-        // function, so as to not suffer instances of special
-        // replacement characters `$`,`\` when using String.replace()
-        // with scriptlet code.
-        const match = /function\(\)\{\}/.exec(code);
-        return code.slice(0, match.index) +
-            details.mainWorld +
-            code.slice(match.index + match[0].length) + "\0";
+        return parts.join('');
     };
 })();
 
+// run with scripting.executeScript so it can access vAPI from the content script rather than be stuck inside USER_SCRIPT world
+vAPI.injectIsolatedFunc = (tabId, frameId, func, args) => {
+	const target = { tabId };
+	if ( typeof frameId === "number" ) { target.frameIds = [ frameId ]; }
+	browser.scripting.executeScript({ target, func, args, injectImmediately: true }).catch((  ) => {});
+}
 
 /******************************************************************************/

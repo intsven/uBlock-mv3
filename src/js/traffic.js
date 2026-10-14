@@ -1352,9 +1352,13 @@ const webRequest = {
 
         return ( ) => {
             vAPI.net.setSuspendableListener(onBeforeRequest);
+            const headersReceivedSpec = [ 'blocking', 'responseHeaders' ];
+            if ( isGecko !== true ) {
+                headersReceivedSpec.push('extraHeaders');
+            }
             vAPI.net.addListener('onHeadersReceived', onHeadersReceived, {
                 urls: [ 'http://*/*', 'https://*/*' ]
-            }, [ 'blocking', 'responseHeaders' ]);
+            }, headersReceivedSpec);
             onResponseStarted.start();
             requestHeadersManager.start();
             vAPI.defer.once({ sec: µb.hiddenSettings.toolbarWarningTimeout }).then(( ) => {

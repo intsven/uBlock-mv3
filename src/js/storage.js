@@ -35,6 +35,7 @@ import {
 import { ubolog, ubologSet } from './console.js';
 
 import cosmeticFilteringEngine from './cosmetic-filtering.js';
+import { getTrustedTokens } from './trusted-tokens.js';
 import { hostnameFromURI } from './uri-utils.js';
 import io from './assets.js';
 import logger from './logger.js';
@@ -282,6 +283,7 @@ import µb from './background.js';
 
     for ( const key in hsDefault ) {
         if ( Object.hasOwn(hsDefault, key) === false ) { continue; }
+//        if ( Object.hasOwn(hsAdmin, name) ) { continue; } // this does not work in upstream uBlock origin because it uses `name` from globalThis
         if ( typeof hs[key] !== typeof hsDefault[key] ) { continue; }
         this.hiddenSettings[key] = hs[key];
     }
@@ -959,7 +961,6 @@ onBroadcast(msg => {
         if ( vAPI.Net.canSuspend() ) {
             vAPI.net.suspend();
         }
-        redirectEngine.reset();
         staticExtFilteringEngine.reset();
         staticNetFilteringEngine.reset();
         µb.selfieManager.destroy();
@@ -1106,16 +1107,16 @@ onBroadcast(msg => {
 
     // Populate the writer with information potentially useful to the
     // client compilers.
-    const trustedSource = details.trustedSource === true;
     if ( details.assetKey ) {
         writer.properties.set('name', details.assetKey);
-        writer.properties.set('trustedSource', trustedSource);
     }
     const assetName = details.assetKey ? details.assetKey : '?';
     const parser = new sfp.AstFilterParser({
-        trustedSource,
+        trustedSource: details.trustedSource === true,
         maxTokenLength: staticNetFilteringEngine.MAX_TOKEN_LENGTH,
         nativeCssHas: vAPI.webextFlavor.env.includes('native_css_has'),
+        canFilterResponseBody: µb.canFilterResponseData,
+        trustedTokens: getTrustedTokens(),
     });
     const compiler = staticNetFilteringEngine.createCompiler(parser);
     const lineIter = new LineIterator(

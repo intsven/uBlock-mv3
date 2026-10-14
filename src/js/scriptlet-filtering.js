@@ -143,9 +143,7 @@ const isolatedWorldInjector = (( ) => {
 })();
 
 const onScriptletMessageInjector = (( ) => {
-    const parts = [
-        '(',
-        function(name) {
+	const fn = function(name) {
             if ( self.uBO_bcSecret ) { return; }
             try {
                 const bcSecret = new self.BroadcastChannel(name);
@@ -169,13 +167,17 @@ const onScriptletMessageInjector = (( ) => {
                 self.uBO_bcSecret = bcSecret;
             } catch {
             }
-        }.toString(),
+        }; 
+    const parts = [
+        '(',
+        fn.toString(),
         ')(',
             'bcSecret-slot',
         ');',
     ];
     const bcSecretSlot = parts.indexOf('bcSecret-slot');
     return {
+		fn,
         assemble(details) {
             parts[bcSecretSlot] = JSON.stringify(details.bcSecret);
             return parts.join('\n');
@@ -338,6 +340,7 @@ export class ScriptletFilteringEngineEx extends ScriptletFilteringEngine {
             domain,
             ancestors: details.ancestors,
         });
+		const useIsolatedInjector = typeof vAPI.injectIsolatedFunc === "function";
         if ( scriptletDetails === undefined ) {
             contentScriptRegisterer.unregister(hostname);
             return;
@@ -347,7 +350,7 @@ export class ScriptletFilteringEngineEx extends ScriptletFilteringEngine {
         }
 
         const contentScript = [ scriptletDetails.code ];
-        if ( logger.enabled ) {
+        if ( logger.enabled && !useIsolatedInjector ) {
             contentScript.unshift(
                 onScriptletMessageInjector.assemble(scriptletDetails)
             );
@@ -359,12 +362,26 @@ export class ScriptletFilteringEngineEx extends ScriptletFilteringEngine {
 
         const isAlreadyInjected = contentScriptRegisterer.register(hostname, code);
         if ( isAlreadyInjected !== true ) {
+			if ( logger.enabled && useIsolatedInjector ) {
+				vAPI.injectIsolatedFunc(details.tabId, details.frameId, onScriptletMessageInjector.fn, [ scriptletDetails.bcSecret ]);
+			}
             vAPI.tabs.executeScript(details.tabId, {
                 code,
                 frameId: details.frameId,
                 matchAboutBlank: true,
                 runAt: 'document_start',
-            });
+            }).then(results => {
+				if ( useIsolatedInjector ) {
+					const filters = results.find(r => r !== undefined);
+					if ( filters === undefined ) { return; }
+
+					vAPI.injectIsolatedFunc(details.tabId, details.frameId, f => {
+						if ( self.uBO_scriptletsInjected === undefined ) {
+							self.uBO_scriptletsInjected = f;
+						}
+					}, [ filters ])
+				}
+			});
         }
         return scriptletDetails;
     }
